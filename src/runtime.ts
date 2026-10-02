@@ -15,15 +15,8 @@ import {
 	type TaskGraph,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { ModelRuntime } from "../../core/model-runtime.ts";
-import { SettingsManager } from "../../core/settings-manager.ts";
-import {
-	configureHarnessHttp,
-	createCodingRegistry,
-	createHarnessSettings,
-	ExecutionEnvs,
-	findInitialAgentModel,
-} from "./harness-setup.ts";
+import { createModelRuntime, defaultModelRef } from "./model-runtime.ts";
+import { harnessSettingsFor, configureHarnessHttp, createCodingRegistry, ExecutionEnvs } from "./harness-setup.ts";
 import { selectSession } from "./sessions.ts";
 import { Subagent } from "./subagent.ts";
 
@@ -44,19 +37,16 @@ export interface Notice {
 export interface ConversationSummary {
 	readonly id: ConversationId;
 	readonly label: string;
-	/** The first user message, for a subagent its task. */
 	readonly title?: string;
 }
 
-/** Everything the TUI renders. Plain values; no Harness objects cross this boundary. */
+/** Everything the web/TUI surface renders. Plain values; no Harness objects cross this boundary. */
 export interface DurableView {
 	readonly session: { readonly id: string; readonly directory: string; readonly cwd: string };
-	/** The conversation shown and talked to. */
 	readonly conversation: ConversationView;
 	readonly conversations: readonly ConversationSummary[];
 	readonly models: readonly ModelSummary[];
 	readonly notices: readonly Notice[];
-	/** The live task graph while the task panel is open. */
 	readonly tasks?: TaskGraph;
 }
 
@@ -65,16 +55,14 @@ export interface DurableViewSource {
 	subscribe(listener: () => void): () => void;
 }
 
-/** What the TUI may ask for. */
+/** What the surface may ask for. */
 export interface DurableController {
-	/** Prompt when idle; otherwise steer or queue a follow-up. */
 	submit(text: string, whenBusy: "steer" | "followUp"): Promise<void>;
 	compact(instructions: string | undefined): Promise<void>;
 	abort(): Promise<void>;
 	cycleThinking(): Promise<void>;
 	setModel(model: ModelRef): Promise<void>;
 	toggleTasks(): Promise<void>;
-	/** Show and talk to another conversation. */
 	switchConversation(id: ConversationId): Promise<void>;
 }
 
@@ -86,8 +74,6 @@ export interface OpenDurableOptions {
 export interface OpenDurableResult {
 	readonly view: DurableViewSource;
 	readonly controller: DurableController;
-	/** pi's settings, for the TUI's theme and terminal capabilities. */
-	readonly settings: SettingsManager;
 	close(): Promise<void>;
 }
 
@@ -96,7 +82,6 @@ export function agentOf(view: ConversationView): AgentState {
 	return (view.docs["pi.agent"] ?? {}) as AgentState;
 }
 
-/** A subagent's task: the oldest user message of its conversation. The main conversation needs no title. */
 async function firstInput(harness: Harness, id: ConversationId): Promise<{ title?: string }> {
 	if (id === ROOT_CONVERSATION_ID) return {};
 	const conversation = (await harness.conversation(id, context))!;
@@ -110,7 +95,6 @@ async function firstInput(harness: Harness, id: ConversationId): Promise<{ title
 	return titleOf(first);
 }
 
-/** The text of a user entry, as a one-line title. */
 function titleOf(entry: EntryRecord | undefined): { title?: string } {
 	const message = entry?.model?.[0];
 	if (message?.role !== "user") return {};
@@ -126,11 +110,10 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 	const envs = new ExecutionEnvs(location.cwd);
 	let harness: Harness | undefined;
 	try {
-		const modelRuntime = await ModelRuntime.create();
-		const settingsManager = SettingsManager.create(location.cwd);
-		configureHarnessHttp(settingsManager);
-		const settings = createHarnessSettings(settingsManager);
-		const registry = createCodingRegistry(settingsManager, location.cwd);
+		const modelRuntime = createModelRuntime();
+		configureHarnessHttp();
+		const settings = harnessSettingsFor();
+		const registry = createCodingRegistry(location.cwd);
 		registry.install(Subagent);
 
 		const pendingReports: unknown[] = [];
@@ -146,12 +129,11 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 			},
 			context,
 		);
-		const initial = location.created ? await findInitialAgentModel(settingsManager, modelRuntime) : undefined;
+		const initial = location.created ? { model: await defaultModelRef(modelRuntime) } : undefined;
 		const root = await harness.root(context, {
 			agent: {
 				cwd: location.cwd,
 				...(initial?.model === undefined ? {} : { model: initial.model }),
-				...(initial?.thinkingLevel === undefined ? {} : { thinkingLevel: initial.thinkingLevel }),
 			},
 		});
 		const label = (id: ConversationId): string => (id === root.id ? "main" : `subagent ${id}`);
@@ -165,12 +147,13 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 		} while (cursor !== undefined);
 		let current: Conversation = root;
 		let conversation: AttachedReplicatedState<ConversationView> = await root.viewState(context);
+		const snapshot = (): any[] => (modelRuntime as any).getAvailableSnapshot?.() ?? (modelRuntime as any).getModels?.() ?? [];
 		const models = (): ModelSummary[] =>
-			modelRuntime.getAvailableSnapshot().map((model) => ({
+			snapshot().map((model: any) => ({
 				provider: model.provider,
-				modelId: model.id,
-				name: model.name,
-				contextWindow: model.contextWindow,
+				modelId: model.id ?? model.modelId,
+				name: model.name ?? model.id ?? model.modelId,
+				contextWindow: model.contextWindow ?? 0,
 			}));
 
 		let state: DurableView = {
@@ -182,7 +165,6 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 		};
 		const listeners = new Set<() => void>();
 		let notifying = false;
-		// Commit listeners and Chord frames call this on the Session line; rendering runs afterwards, once per burst.
 		const update = (patch: Partial<DurableView>): void => {
 			state = { ...state, ...patch };
 			if (notifying) return;
@@ -200,7 +182,6 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 		report = (error) => notice("warning", error instanceof Error ? error.message : String(error));
 		for (const error of pendingReports) report(error);
 		let unsubscribe = conversation.subscribe((value) => update({ conversation: value }));
-		// Subagents appear as their conversations are created. A commit listener only records; it calls no Session API.
 		const unsubscribeCommits = harness.subscribeCommits((publication) => {
 			let conversations = state.conversations;
 			for (const change of publication.changes) {
@@ -225,7 +206,6 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 		};
 
 		let queue = Promise.resolve();
-		// One at a time, so toggles, switches, and key presses apply in order.
 		const command = (operation: () => Promise<void>): Promise<void> => {
 			queue = queue.then(operation).catch(fail);
 			return queue;
@@ -242,7 +222,7 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 		};
 		const agentModel = () => {
 			const ref = agentOf(state.conversation).model;
-			const model = ref === undefined ? undefined : modelRuntime.getModel(ref.provider, ref.modelId);
+			const model = ref === undefined ? undefined : (modelRuntime as any).getModel(ref.provider, ref.modelId);
 			if (model === undefined)
 				throw new Error(ref === undefined ? "No model selected" : "Current model is unavailable");
 			return model;
@@ -253,12 +233,10 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 			compact: (instructions) =>
 				command(async () => {
 					const id = await current.compact(instructions, context);
-					// Report the outcome once it is known; the status line shows the compaction meanwhile.
 					void opened.waitForTask(id, context).then(async (receipt) => {
 						const outcome = receipt.state.outcome;
 						if (outcome.status === "completed") {
 							const { entryId, submissionId } = outcome.result;
-							// A summary written while busy is a submission: placed now, queued, or dropped as stale.
 							const status =
 								submissionId === undefined
 									? undefined
@@ -272,13 +250,12 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 										: status === "unanswered"
 											? "Compaction summary dropped: the context changed under it."
 											: "Nothing to compact: the context fits in the recent window that is kept verbatim.",
-							);
+								);
 						} else if (outcome.status === "aborted") notice("info", "Compaction aborted.");
 						else
 							notice("error", `Compaction ${outcome.status}: ${outcome.error?.message ?? outcome.reason ?? ""}`);
 					}, fail);
 				}),
-			// Not queued: it waits until the conversation is idle.
 			abort: () => current.abort(context).catch(fail),
 			cycleThinking: () =>
 				command(async () => {
@@ -291,7 +268,7 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 				}),
 			setModel: (ref) =>
 				command(async () => {
-					const model = modelRuntime.getModel(ref.provider, ref.modelId);
+					const model = (modelRuntime as any).getModel(ref.provider, ref.modelId);
 					if (model === undefined) throw new Error(`Unknown model: ${ref.provider}/${ref.modelId}`);
 					const thinking: ModelThinkingLevel = agentOf(state.conversation).thinkingLevel ?? "off";
 					await current.configure({ model: ref, thinkingLevel: clampThinkingLevel(model, thinking) }, context);
@@ -321,14 +298,11 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 		};
 
 		const saved = agentOf(state.conversation).model;
-		if (saved === undefined) notice("warning", "No model configured; select one with /model.");
-		else if (modelRuntime.getModel(saved.provider, saved.modelId) === undefined) {
+		if (saved === undefined) notice("warning", "No model configured; using the default.");
+		else if ((modelRuntime as any).getModel(saved.provider, saved.modelId) === undefined) {
 			notice("warning", `Saved model is unavailable: ${saved.provider}/${saved.modelId}`);
 		}
-		if (initial?.fallbackMessage !== undefined) notice("info", initial.fallbackMessage);
-		// The task panel starts open; /tasks hides it.
 		await controller.toggleTasks();
-		// Recovered work from an interrupted turn continues now.
 		harness.resume();
 
 		let closing: Promise<void> | undefined;
@@ -341,7 +315,6 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 				},
 			},
 			controller,
-			settings: settingsManager,
 			close() {
 				closing ??= (async () => {
 					unsubscribe();
@@ -349,7 +322,6 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 					conversation.dispose();
 					closeTasks();
 					try {
-						// Close writes no outcome: a running turn resumes with --continue.
 						await opened.close(context);
 						await envs.cleanup(context);
 					} finally {

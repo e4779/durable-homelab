@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readdir, realpath } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import lockfile from "proper-lockfile";
-import { getAgentDir } from "../../config.ts";
+import { getAgentDir } from "./config.ts";
 
 /** One session directory holding `session.sqlite`, locked by this process. */
 export interface SessionLocation {
