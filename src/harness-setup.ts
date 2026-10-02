@@ -2,6 +2,8 @@ import { createRegistry, type EnvTarget, type HarnessSettings, type Registry } f
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
 import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { HomelabPrompt } from "./prompt.ts";
+import { Memory } from "./extensions/memory.ts";
+import { Continuity } from "./extensions/continuity.ts";
 import { harnessSettings } from "./settings.ts";
 
 /**
@@ -19,6 +21,8 @@ export function createCodingRegistry(_cwd: string): Registry {
 	const registry = createRegistry();
 	registry.install(CodingTools);
 	registry.install(HomelabPrompt);
+	registry.install(Memory);
+	registry.install(Continuity);
 	return registry;
 }
 

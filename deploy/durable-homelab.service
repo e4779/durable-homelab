@@ -1,0 +1,14 @@
+[Unit]
+Description=durable-homelab agent (pi-durable + htmx web surface)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/home/e4779/.nvm/versions/node/v24.18.1/bin/node src/serve.ts
+WorkingDirectory=/home/e4779/projects/durable-homelab
+Environment=PORT=8642
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
