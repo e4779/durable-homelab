@@ -1,0 +1,4 @@
+node_modules/
+data/
+.pi/fabric/
+.pi/context-store/
