@@ -58,7 +58,7 @@ export interface DurableViewSource {
 
 /** What the surface may ask for. */
 export interface DurableController {
-	submit(text: string, whenBusy: "steer" | "followUp"): Promise<void>;
+	submit(text: string, whenBusy: "steer" | "followUp", blocks?: readonly unknown[]): Promise<void>;
 	compact(instructions: string | undefined): Promise<void>;
 	abort(): Promise<void>;
 	cycleThinking(): Promise<void>;
@@ -230,8 +230,11 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 			return model;
 		};
 		const controller: DurableController = {
-			submit: (text, whenBusy) =>
-				command(async () => watchAnswer(await current.submit({ type: "input", content: text, whenBusy }, context))),
+			submit: (text, whenBusy, blocks) =>
+				command(async () => {
+					const content = blocks && blocks.length > 0 ? [{ type: "text", text }, ...blocks] : text;
+					watchAnswer(await current.submit({ type: "input", content, whenBusy }, context));
+				}),
 			compact: (instructions) =>
 				command(async () => {
 					const id = await current.compact(instructions, context);

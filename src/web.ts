@@ -113,8 +113,9 @@ const PAGE = `
 		<main>
 			<h1>durable-homelab</h1>
 			<div id="main-swap" hx-get="/fragment" hx-trigger="load, every 4s"></div>
-			<form hx-post="/submit" hx-target="#form-status" hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) this.reset()">
+			<form id="prompt-form">
 				<textarea name="text" placeholder="prompt — joins the running work (steer)"></textarea>
+				<div class="attach-row">					<label class="attach" for="file">📎 attach images</label>					<input type="file" id="file" accept="image/*" multiple class="hidden" />					<img id="shot-preview" class="hidden" alt="" />				</div>
 				<button type="submit">send</button>
 				<button type="submit" name="action" value="compact" class="danger">compact</button>
 				<button type="submit" name="action" value="abort" class="danger">abort</button>
@@ -129,6 +130,44 @@ const PAGE = `
 		es.addEventListener("main", (e) => paint("main-swap", e.data));
 		es.addEventListener("sidebar", (e) => paint("sidebar-swap", e.data));
 		htmx.on("htmx:load", refresh);
+		const form = document.getElementById("prompt-form");
+		const fileInput = document.getElementById("file");
+		const preview = document.getElementById("shot-preview");
+		const status = (msg, cls) => { const el = document.getElementById("form-status"); el.innerHTML = '<div class="notice ' + cls + '">' + msg + "</div>"; };
+		fileInput.addEventListener("change", () => {
+			const f = fileInput.files[0];
+			if (f) { preview.src = URL.createObjectURL(f); preview.classList.remove("hidden"); }
+			else { preview.classList.add("hidden"); preview.src = ""; }
+		});
+		const toBlocks = async () => {
+			const blocks = [];
+			const text = form.querySelector("textarea").value;
+			if (text.trim()) blocks.push({ type: "text", text });
+			for (const f of fileInput.files) {
+				const data = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = rej; r.readAsDataURL(f); });
+				const m = /^data:([^;]+);base64,(.*)$/s.exec(data);
+				if (m) blocks.push({ type: "image", mimeType: m[1], data: m[2] });
+			}
+			return blocks;
+		};
+		form.addEventListener("submit", async (e) => {
+			e.preventDefault();
+			const btn = e.submitter || document.activeElement;
+			const action = btn?.name === "action" ? btn.value : null;
+			const text = form.querySelector("textarea").value;
+			try {
+				if (action === "abort") { await fetch("/submit", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action }) }); }
+				else if (action === "compact") { await fetch("/submit", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action, instructions: text }) }); status("compacting", "warning"); }
+				else {
+					const blocks = await toBlocks();
+					if (!text && blocks.length === 0) return;
+					await fetch("/submit", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text, blocks }) });
+				}
+				form.reset(); fileInput.value = ""; preview.classList.add("hidden"); preview.src = "";
+				status("sent", "info");
+				refresh();
+			} catch (err) { status(String(err), "error"); }
+		});
 	</script>
 </body>
 </html>
@@ -206,11 +245,18 @@ export function createWebServer(
 			}
 			if (url === "/submit" && request.method === "POST") {
 				const body = await readBody(request);
-				const action = formValue(body, "action");
-				const text = formValue(body, "text").trim();
-				if (action === "abort") void controller.abort();
-				else if (action === "compact") void controller.compact(text.length > 0 ? text : undefined);
-				else if (text.length > 0) void controller.submit(text, "steer");
+				if ((request.headers["content-type"] ?? "").includes("application/json")) {
+					const j = JSON.parse(body);
+					if (j.action === "abort") void controller.abort();
+					else if (j.action === "compact") void controller.compact(j.instructions ?? undefined);
+					else void controller.submit(j.text ?? "", "steer", j.blocks);
+				} else {
+					const action = formValue(body, "action");
+					const text = formValue(body, "text").trim();
+					if (action === "abort") void controller.abort();
+					else if (action === "compact") void controller.compact(text.length > 0 ? text : undefined);
+					else if (text.length > 0) void controller.submit(text, "steer");
+				}
 				response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
 				response.end('<div id="form-status" class="notice info">sent</div>');
 				return;

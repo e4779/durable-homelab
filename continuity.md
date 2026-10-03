@@ -36,3 +36,6 @@
 - ~/kn/bundles/agents/ — pi-1-0-and-durable-launch.md, pico5-next-gen-harness.md,
   chord-composition-runtime.md, pi-099-release-transition-checklist.md (ищется тулом kn_search).
 - docs/M0.md — карта порта; goal.md — цели и вердикт верификации.
+- [2026-10-03T06:29] Image attachments added to web UI: form 📎 attach + base64 blocks → POST /submit JSON {text, blocks} → controller.submit(text, "steer", blocks?) → durable UserInput (string | (Text|Image)[]). Images render inline in transcript via entryHtml. INCIDENT: concurrent editing session (user's other agent) raced on src/web.ts+runtime.ts → crash loop (89 restarts, nested backticks inside PAGE template literal break node type-stripping — never use nested ` or ${} in the PAGE client script), git reverts, and a 0-byte web.ts. Rebuilt web.ts from context; agreed with user: single-threaded edits through this session. Verify image send works with glm-5.3-flash (vision support unconfirmed).
+
+- [2026-10-03] Incident: my own edit to src/web.ts (image attachments) crashed the service in a restart loop — nested backticks inside the PAGE template literal, server not updated to the JSON protocol. Fixed: feature completed client+server, /submit dual-mode (JSON blocks + legacy form), controller.submit passes content blocks to durable. Rule learned: import-check src files before every service restart.
