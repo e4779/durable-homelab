@@ -6,3 +6,4 @@ data/
 .imgcache/
 attachments/
 .durable-current
+.projects.json

@@ -14,8 +14,9 @@ import {
 	ROOT_CONVERSATION_ID,
 	type Submission,
 	type TaskGraph,
+	AgentDoc,
 } from "@earendil-works/pi-durable";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createModelRuntime, defaultModelRef } from "./model-runtime.ts";
@@ -41,6 +42,10 @@ export interface ConversationSummary {
 	readonly id: ConversationId;
 	readonly label: string;
 	readonly title?: string;
+	/** Newest entry id in the conversation — recency key for sorting. */
+	readonly lastEntryId?: string;
+	/** Working directory this conversation is bound to (Projects v2). */
+	readonly cwd?: string;
 }
 
 /** Everything the web/TUI surface renders. Plain values; no Harness objects cross this boundary. */
@@ -51,6 +56,8 @@ export interface DurableView {
 	readonly models: readonly ModelSummary[];
 	readonly notices: readonly Notice[];
 	readonly tasks?: TaskGraph;
+	/** Registered project directories (Projects v2). */
+	readonly projects?: readonly string[];
 }
 
 export interface DurableViewSource {
@@ -67,7 +74,9 @@ export interface DurableController {
 	setModel(model: ModelRef): Promise<void>;
 	toggleTasks(): Promise<void>;
 	switchConversation(id: ConversationId): Promise<void>;
-	createConversation(): Promise<void>;
+	createConversation(cwd?: string): Promise<void>;
+	/** Register a new project directory (must exist). */
+	addProject(path: string): Promise<void>;
 }
 
 export interface OpenDurableOptions {
@@ -86,17 +95,19 @@ export function agentOf(view: ConversationView): AgentState {
 	return (view.docs["pi.agent"] ?? {}) as AgentState;
 }
 
-async function firstInput(harness: Harness, id: ConversationId): Promise<{ title?: string }> {
+async function firstInput(harness: Harness, id: ConversationId): Promise<{ title?: string; lastEntryId?: string }> {
 	if (id === ROOT_CONVERSATION_ID) return {};
 	const conversation = (await harness.conversation(id, context))!;
 	let first: EntryRecord | undefined;
+	let last: EntryRecord | undefined;
 	let cursor: Cursor | undefined;
 	do {
 		const page = await conversation.entries({}, 256, cursor, context);
 		first = page.items.findLast((entry) => entry.kind === "pi.user") ?? first;
+		last = page.items.at(-1) ?? last;
 		cursor = page.next;
 	} while (cursor !== undefined);
-	return titleOf(first);
+	return { ...titleOf(first), ...(last ? { lastEntryId: String(last.id) } : {}) };
 }
 
 function titleOf(entry: EntryRecord | undefined): { title?: string } {
@@ -112,6 +123,22 @@ function titleOf(entry: EntryRecord | undefined): { title?: string } {
 export async function openDurable(options: OpenDurableOptions = {}): Promise<OpenDurableResult> {
 	const location = await selectSession(options.cwd ?? process.cwd(), options.continueSession ?? false);
 	const envs = new ExecutionEnvs(location.cwd);
+
+	// Projects v2: registered project directories + per-conversation cwd map
+	const projectsFile = join(location.cwd, ".projects.json");
+	let projects: string[] = [location.cwd];
+	const loadProjects = (): void => {
+		try {
+			const parsed = JSON.parse(readFileSync(projectsFile, "utf8"));
+			if (Array.isArray(parsed?.projects)) projects = [location.cwd, ...parsed.projects.filter((p: unknown) => typeof p === "string" && p !== location.cwd)];
+		} catch { /* first run */ }
+	};
+	const saveProjects = (): void => {
+		try {
+			writeFileSync(projectsFile, JSON.stringify({ projects: projects.filter((p) => p !== location.cwd) }, null, 2));
+		} catch { /* best effort */ }
+	};
+	loadProjects();
 	let harness: Harness | undefined;
 	try {
 		const modelRuntime = createModelRuntime();
@@ -147,7 +174,10 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 		let cursor: Cursor | undefined;
 		do {
 			const page = await opened.commit((tx) => tx.scanConversations({}, 256, cursor), context);
-			for (const rec of page.items) summaries.push({ id: rec.id, label: label(rec), ...(await firstInput(opened, rec.id)) });
+			for (const rec of page.items) {
+				const agentDoc = await opened.snapshot(AgentDoc, rec.id, context).catch(() => undefined);
+				summaries.push({ id: rec.id, label: label(rec), cwd: agentDoc?.cwd ?? location.cwd, ...(await firstInput(opened, rec.id)) });
+			}
 			cursor = page.next;
 		} while (cursor !== undefined);
 		let current: Conversation = root;
@@ -292,18 +322,24 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 					const thinking: ModelThinkingLevel = agentOf(state.conversation).thinkingLevel ?? "off";
 					await current.configure({ model: ref, thinkingLevel: clampThinkingLevel(model, thinking) }, context);
 				}),
-			createConversation: () =>
+			createConversation: (cwd) =>
 				command(async () => {
 					let createdId: ConversationId | undefined;
+					const target = cwd ?? location.cwd;
 					await opened.commit(async (tx) => {
 						const record = await tx.createConversation({ ownership: { kind: "ownerless" } });
 						createdId = record.id;
 						const model = await defaultModelRef(modelRuntime);
 						await configure(tx, record.id, {
-							cwd: location.cwd,
+							cwd: target,
 							...(model === undefined ? {} : { model }),
 						}, context);
 					}, context);
+					if (!projects.includes(target)) {
+						projects.push(target);
+						saveProjects();
+						update({ projects: [...projects] });
+					}
 					if (createdId === undefined) throw new Error("Conversation was not created");
 					const next = await opened.conversation(createdId, context);
 					const nextState = await next.viewState(context);
@@ -324,6 +360,17 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 					const graph = await opened.taskGraph(context);
 					tasks = graph;
 					unsubscribeTasks = graph.subscribe((value) => update({ tasks: value }));
+					update({ projects: [...projects] });
+				}),
+			addProject: (path) =>
+				command(async () => {
+					const clean = path.replace(/\/+$/, "");
+					if (!existsSync(clean)) throw new Error(`Directory does not exist: ${clean}`);
+					if (!projects.includes(clean)) {
+						projects.push(clean);
+						saveProjects();
+						update({ projects: [...projects] });
+					}
 				}),
 			switchConversation: (id) =>
 				command(async () => {

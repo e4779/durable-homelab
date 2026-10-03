@@ -124,7 +124,7 @@ function transcript(view: DurableView): string {
 
 const activeId = (view: DurableView): number => view.conversation.conversation?.id ?? -1;
 
-function renderMain(view: DurableView): string {
+export function renderMain(view: DurableView): string {
 	const notices = view.notices
 		.slice(-5)
 		.map((n) => `<div class="notice ${n.level}">${esc(n.message)}</div>`)
@@ -134,22 +134,34 @@ function renderMain(view: DurableView): string {
 <div id="transcript">${transcript(view)}</div>`;
 }
 
-function renderSidebar(view: DurableView): string {
+export function renderSidebar(view: DurableView): string {
 	const active = activeId(view);
-	const rootId = view.conversations[0]?.id;
-	const project = (view.session.cwd || view.session.directory).replace(/\/$/, "").split("/").pop() || "project";
-	const head = `<div class="project-head">▾ <span>${esc(project)}</span></div>`;
-	const items = [...view.conversations]
-		.sort((a, b) => (a.id === rootId ? -1 : b.id === rootId ? 1 : a.id - b.id))
-		.map(
-			(c) =>
-				`<a class="convo${c.id === active ? " active" : ""}${c.id === rootId ? " convo-root" : " convo-sub"}" href="/${c.id}" hx-trigger="click" hx-post="/switch" hx-vals='{"id":${c.id}}' hx-swap="none">` +
-				`<span class="label">${esc(c.label)}</span>${c.title ? `<span class="title">${esc(c.title.slice(0, 60))}</span>` : ""}</a>`,
-		)
-		.join("\n");
+	const defaultCwd = view.session.cwd;
+	const projects = view.projects ?? [defaultCwd];
+	const projectName = (cwd: string): string => cwd.replace(/\/+$/, "").split("/").pop() || cwd;
+	const recency = (c: { lastEntryId?: string }): number => {
+		const n = Number(c.lastEntryId);
+		return Number.isFinite(n) && c.lastEntryId !== undefined ? n : 0;
+	};
+	const renderConvo = (c: (typeof view.conversations)[number]): string =>
+		`<a class="convo${c.id === active ? " active" : ""}${c.cwd === defaultCwd && c.label === "main" ? " convo-root" : " convo-sub"}" href="/${c.id}" hx-trigger="click" hx-post="/switch" hx-vals='{"id":${c.id}}' hx-swap="none">` +
+		`<span class="label">${esc(c.label)}</span>${c.title ? `<span class="title">${esc(c.title.slice(0, 60))}</span>` : ""}</a>`;
+
+	const groups: string[] = [];
+	for (const project of projects) {
+		const convos = view.conversations
+			.filter((c) => (c.cwd ?? defaultCwd) === project)
+			.sort((a, b) => recency(b) - recency(a));
+		if (convos.length === 0 && project !== defaultCwd) continue;
+		groups.push(
+			`<div class="project-head">▾ <span title="${escAttr(project)}">${esc(projectName(project))}</span>` +
+			`<button class="proj-new" title="new session in ${escAttr(projectName(project))}" hx-post="/new" hx-vals='${JSON.stringify({ cwd: project }).replace(/'/g, "&#39;")}' hx-swap="none">+</button></div>` +
+			`<div class="proj-group">${convos.map(renderConvo).join("\n") || '<div class="empty">no sessions</div>'}</div>`,
+		);
+	}
 	return `
-${head}
-<div id="convos">${items}"\n")}</div>`;
+<button class="add-project" hx-post="/projects/add" hx-prompt="Absolute path of the project directory" hx-swap="none">+ add project</button>
+${groups.join("\n")}`;
 }
 
 const fmtTokens = (n: number): string =>
@@ -204,14 +216,19 @@ function contextGauge(view: DurableView): string {
 		`<span class="ctxbar"><i style="width:${pct.toFixed(1)}%"></i></span>${pct.toFixed(1)}% · ${fmtTokens(tokens)}/${fmtTokens(window)}</span>`;
 }
 
-function renderHeader(view: DurableView): string {
+export function renderHeader(view: DurableView): string {
 	const model = view.conversation.docs?.["pi.agent"]?.model;
 	const id = activeId(view);
 	const busy = (view.conversation.docs?.["pi.live"] as any)?.run !== undefined;
 	const live = busy
 		? '<span class="pulse" title="a run is in flight">● generating</span>'
 		: '<span class="idle-dot" title="idle">○</span>';
-	return `<span data-convo-id="${id}" class="hdr">${live}<span class="model">${esc(model ? `${model.provider}/${model.modelId}` : "no model")}</span><span class="session" title="${esc(view.session.id)}">${esc(view.session.id.slice(0, 12))}…</span>${usageFooter(view)}${contextGauge(view)}</span>`;
+	return `<span data-convo-id="${id}" class="hdr">${live}<span class="model">${esc(model ? `${model.provider}/${model.modelId}` : "no model")}</span><span class="session" title="${esc(view.session.id)}">${esc(view.session.id.slice(0, 12))}…</span></span>`;
+}
+
+/** Thin status strip at the very bottom: session spend + context-window gauge. */
+export function renderFooter(view: DurableView): string {
+	return `<div class="footer-strip">${usageFooter(view)}${contextGauge(view)}</div>`;
 }
 
 const PAGE = `
@@ -304,6 +321,8 @@ const PAGE = `
 		button:hover { filter: brightness(1.15); }
 		button.danger { background: #3a2424; color: #ecc; }
 		#form-status:empty { display: none; }
+		#footer { border-top: 1px solid var(--line); background: var(--panel); font-size: 0.68rem; color: var(--faint); padding: 0.3rem 1.2rem; }
+		.footer-strip { max-width: 58rem; margin-inline: auto; display: flex; gap: 1.2rem; flex-wrap: wrap; align-items: center; }
 		@media (max-width: 720px) {
 			.layout { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
 			#divider { display: none; }
@@ -338,7 +357,6 @@ const PAGE = `
 							<button type="button" id="mode-file" class="chip" title="сохранить на диск, в промот пойдёт путь">as file</button>
 						</span>
 						<input type="file" id="file" accept="image/*" multiple class="hidden" />
-							<input type="file" id="file" accept="image/*" multiple class="hidden" />
 							<img id="shot-preview" class="hidden" alt="" />
 							<span class="spacer"></span>
 							<button type="submit">send</button>
@@ -347,6 +365,7 @@ const PAGE = `
 						</div>
 					</form>
 					<div id="form-status"></div>
+			<div id="footer" hx-get="/footer" hx-trigger="load, every 8s"></div>
 				</div>
 			</div>
 		</main>
@@ -395,6 +414,7 @@ const PAGE = `
 		es.addEventListener("main", (e) => paint("main-swap", e.data));
 		es.addEventListener("sidebar", (e) => paint("sidebar-swap", e.data));
 		es.addEventListener("header", (e) => paint("main-swap-header", e.data));
+		es.addEventListener("footer", (e) => paint("footer", e.data));
 		htmx.on("htmx:load", refresh);
 		const form = document.getElementById("prompt-form");
 		const ta = document.getElementById("prompt-text");
@@ -528,7 +548,7 @@ export function createWebServer(
 		renderTimer = setTimeout(() => {
 			renderTimer = undefined;
 			const current = viewNow();
-			const payload = SSE("main", renderMain(current)) + SSE("sidebar", renderSidebar(current)) + SSE("header", renderHeader(current));
+			const payload = SSE("main", renderMain(current)) + SSE("sidebar", renderSidebar(current)) + SSE("header", renderHeader(current)) + SSE("footer", renderFooter(current));
 			for (const client of clients) client.write(payload);
 		}, 120);
 	};
@@ -570,10 +590,17 @@ export function createWebServer(
 				response.end(readFileSync(file));
 				return;
 			}
-			if (url === "/fragment" || url === "/sidebar" || url === "/header") {
+			if (url === "/fragment" || url === "/sidebar" || url === "/header" || url === "/footer") {
 				response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+				const v = viewNow();
 				response.end(
-					url === "/fragment" ? renderMain(viewNow()) : url === "/sidebar" ? renderSidebar(viewNow()) : renderHeader(viewNow()),
+					url === "/fragment"
+						? renderMain(v)
+						: url === "/sidebar"
+							? renderSidebar(v)
+							: url === "/header"
+								? renderHeader(v)
+								: renderFooter(v),
 				);
 				return;
 			}
@@ -583,7 +610,7 @@ export function createWebServer(
 					"cache-control": "no-cache",
 					connection: "keep-alive",
 				});
-				response.write(SSE("main", renderMain(viewNow())) + SSE("sidebar", renderSidebar(viewNow())) + SSE("header", renderHeader(viewNow())));
+				response.write(SSE("main", renderMain(viewNow())) + SSE("sidebar", renderSidebar(viewNow())) + SSE("header", renderHeader(viewNow())) + SSE("footer", renderFooter(viewNow())));
 				clients.add(response);
 				const heartbeat = setInterval(() => response.write(": ping\n\n"), 15000);
 				request.on("close", () => {
