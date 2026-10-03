@@ -76,7 +76,6 @@ const PAGE = `
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
 	<title>durable-homelab</title>
 	<script src="/vendor/htmx.min.js"></script>
-	<script src="/vendor/ext/sse.js"></script>
 	<style>
 		:root { color-scheme: dark; }
 		* { box-sizing: border-box; }
@@ -107,15 +106,13 @@ const PAGE = `
 </head>
 <body>
 	<div class="layout">
-		<aside id="sidebar" hx-ext="sse" sse-connect="/events">
+		<aside id="sidebar">
 			<div class="brand">durable-homelab</div>
-			<div sse-swap="sidebar" hx-swap="innerHTML" hx-get="/sidebar" hx-trigger="load, every 8s"></div>
+			<div id="sidebar-swap" hx-get="/sidebar" hx-trigger="load, every 8s"></div>
 		</aside>
 		<main>
 			<h1>durable-homelab</h1>
-			<div hx-ext="sse" sse-connect="/events">
-				<div sse-swap="main" hx-swap="innerHTML" hx-get="/fragment" hx-trigger="load, every 4s"></div>
-			</div>
+			<div id="main-swap" hx-get="/fragment" hx-trigger="load, every 4s"></div>
 			<form hx-post="/submit" hx-target="#form-status" hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) this.reset()">
 				<textarea name="text" placeholder="prompt — joins the running work (steer)"></textarea>
 				<button type="submit">send</button>
@@ -125,6 +122,14 @@ const PAGE = `
 			<div id="form-status"></div>
 		</main>
 	</div>
+	<script>
+		const paint = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+		const refresh = () => fetch("/fragment").then((r) => r.text()).then((html) => paint("main-swap", html));
+		const es = new EventSource("/events");
+		es.addEventListener("main", (e) => paint("main-swap", e.data));
+		es.addEventListener("sidebar", (e) => paint("sidebar-swap", e.data));
+		htmx.on("htmx:load", refresh);
+	</script>
 </body>
 </html>
 `;
@@ -179,11 +184,6 @@ export function createWebServer(
 				response.end(readFileSync(join(process.cwd(), "vendor", "htmx.min.js")));
 				return;
 			}
-			if (url === "/vendor/ext/sse.js") {
-				response.writeHead(200, { "content-type": "text/javascript" });
-				response.end(readFileSync(join(process.cwd(), "vendor", "ext", "sse.js")));
-				return;
-			}
 			if (url === "/fragment" || url === "/sidebar") {
 				response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
 				response.end(url === "/fragment" ? renderMain(viewNow()) : renderSidebar(viewNow()));
@@ -195,10 +195,7 @@ export function createWebServer(
 					"cache-control": "no-cache",
 					connection: "keep-alive",
 				});
-				const send = (event: string, html: string): void =>
-					response.write(SSE(event, html));
-				send("main", renderMain(viewNow()));
-				send("sidebar", renderSidebar(viewNow()));
+				response.write(SSE("main", renderMain(viewNow())) + SSE("sidebar", renderSidebar(viewNow())));
 				clients.add(response);
 				const heartbeat = setInterval(() => response.write(": ping\n\n"), 15000);
 				request.on("close", () => {

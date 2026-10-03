@@ -281,9 +281,10 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 					await opened.commit(async (tx) => {
 						const record = await tx.createConversation({ ownership: { kind: "ownerless" } });
 						createdId = record.id;
-						const model = defaultModelRef(modelRuntime);
+						const model = await defaultModelRef(modelRuntime);
 						await configure(tx, record.id, {
-							agent: { cwd: location.cwd, ...(model === undefined ? {} : { model }) },
+							cwd: location.cwd,
+							...(model === undefined ? {} : { model }),
 						}, context);
 					}, context);
 					if (createdId === undefined) throw new Error("Conversation was not created");
