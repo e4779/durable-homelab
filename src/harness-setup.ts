@@ -4,6 +4,7 @@ import { CodingTools } from "@earendil-works/pi-durable/tools";
 import { HomelabPrompt } from "./prompt.ts";
 import { Memory } from "./extensions/memory.ts";
 import { Continuity } from "./extensions/continuity.ts";
+import { Mcp } from "./extensions/mcp.ts";
 import { harnessSettings } from "./settings.ts";
 
 /**
@@ -23,6 +24,7 @@ export function createCodingRegistry(_cwd: string): Registry {
 	registry.install(HomelabPrompt);
 	registry.install(Memory);
 	registry.install(Continuity);
+	registry.install(Mcp);
 	return registry;
 }
 

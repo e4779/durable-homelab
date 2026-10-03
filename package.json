@@ -9,6 +9,8 @@
     "@earendil-works/chord": "^1.0.0",
     "@earendil-works/pi-ai": "^1.0.0",
     "@earendil-works/pi-durable": "^1.0.0",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "mcporter": "^0.14.2",
     "proper-lockfile": "^4.1.2"
   }
 }

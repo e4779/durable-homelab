@@ -15,6 +15,8 @@ import {
 	type Submission,
 	type TaskGraph,
 } from "@earendil-works/pi-durable";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { createModelRuntime, defaultModelRef } from "./model-runtime.ts";
 import { harnessSettingsFor, configureHarnessHttp, createCodingRegistry, ExecutionEnvs } from "./harness-setup.ts";
@@ -138,17 +140,29 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 				...(initial?.model === undefined ? {} : { model: initial.model }),
 			},
 		});
-		const label = (id: ConversationId): string => (id === root.id ? "main" : `subagent ${id}`);
+		const label = (rec: { id: ConversationId; owner?: { readonly taskId: unknown } }): string =>
+		rec.id === root.id ? "main" : rec.owner !== undefined ? `subagent ${rec.id}` : `session ${rec.id}`;
 		const opened = harness;
 		const summaries: ConversationSummary[] = [];
 		let cursor: Cursor | undefined;
 		do {
 			const page = await opened.commit((tx) => tx.scanConversations({}, 256, cursor), context);
-			for (const { id } of page.items) summaries.push({ id, label: label(id), ...(await firstInput(opened, id)) });
+			for (const rec of page.items) summaries.push({ id: rec.id, label: label(rec), ...(await firstInput(opened, rec.id)) });
 			cursor = page.next;
 		} while (cursor !== undefined);
 		let current: Conversation = root;
 		let conversation: AttachedReplicatedState<ConversationView> = await root.viewState(context);
+		const switchTo = async (id: ConversationId): Promise<void> => {
+			const next = await opened.conversation(id, context);
+			if (next === undefined) throw new Error(`Conversation ${id} does not exist`);
+			const nextState = await next.viewState(context);
+			unsubscribe();
+			conversation.dispose();
+			current = next;
+			conversation = nextState;
+			unsubscribe = nextState.subscribe((value) => update({ conversation: value }));
+		};
+
 		const snapshot = (): any[] => (modelRuntime as any).getAvailableSnapshot?.() ?? (modelRuntime as any).getModels?.() ?? [];
 		const models = (): ModelSummary[] =>
 			snapshot().map((model: any) => ({
@@ -188,7 +202,7 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 			let conversations = state.conversations;
 			for (const change of publication.changes) {
 				if (change.type === "conversation") {
-					conversations = [...conversations, { id: change.value.id, label: label(change.value.id) }];
+					conversations = [...conversations, { id: change.value.id, label: label(change.value) }];
 				} else if (change.type === "entry" && change.value.kind === "pi.user") {
 					const id = change.value.conversationId;
 					conversations = conversations.map((summary) =>
@@ -313,14 +327,10 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 				}),
 			switchConversation: (id) =>
 				command(async () => {
-					const next = await opened.conversation(id, context);
-					if (next === undefined) throw new Error(`Conversation ${id} does not exist`);
-					const nextState = await next.viewState(context);
-					unsubscribe();
-					conversation.dispose();
-					current = next;
-					conversation = nextState;
-					unsubscribe = nextState.subscribe((value) => update({ conversation: value }));
+					await switchTo(id);
+					try {
+						writeFileSync(join(location.cwd, ".durable-current"), String(id));
+					} catch { /* persistence is best-effort */ }
 				}),
 		};
 
@@ -329,6 +339,13 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 		else if ((modelRuntime as any).getModel(saved.provider, saved.modelId) === undefined) {
 			notice("warning", `Saved model is unavailable: ${saved.provider}/${saved.modelId}`);
 		}
+		// restore the conversation that was active before the last restart
+		try {
+			const savedId = Number(readFileSync(join(location.cwd, ".durable-current"), "utf8").trim());
+			if (Number.isFinite(savedId) && savedId !== root.id && summaries.some((c) => c.id === savedId)) {
+				await switchTo(savedId);
+			}
+		} catch { /* no saved selection — stay on root */ }
 		await controller.toggleTasks();
 		harness.resume();
 

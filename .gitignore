@@ -3,3 +3,6 @@ data/
 .pi/fabric/
 .pi/context-store/
 .pi-web/
+.imgcache/
+attachments/
+.durable-current

@@ -19,6 +19,8 @@ console.log(`durable-homelab web surface on http://0.0.0.0:${port}`);
 
 const shutdown = (): void => {
 	void (async () => {
+		// hard fallback: never block systemd stop on wedged connections/storage
+		setTimeout(() => process.exit(0), 3000);
 		await web.close();
 		await durable.close();
 		process.exit(0);
