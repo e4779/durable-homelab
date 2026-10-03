@@ -37,23 +37,35 @@ function transcript(view: DurableView): string {
 	return parts.join("\n");
 }
 
-function renderFull(view: DurableView): string {
+const activeId = (view: DurableView): number => view.conversation.conversation?.id ?? -1;
+
+function renderMain(view: DurableView): string {
 	const model = view.conversation.docs?.["pi.agent"]?.model;
 	const notices = view.notices
 		.slice(-5)
 		.map((n) => `<div class="notice ${n.level}">${esc(n.message)}</div>`)
 		.join("\n");
-	const convos = view.conversations
-		.map((c) => `<button class="convo" hx-post="/switch" hx-vals='{"id":${c.id}}' hx-swap="none">${esc(c.label)}</button>`)
-		.join(" ");
 	return `
 <div class="status">
 	<span class="model">${esc(model ? `${model.provider}/${model.modelId}` : "no model")}</span>
 	<span class="session">${esc(view.session.id)}</span>
-	<span class="convos">${convos}</span>
 </div>
 <div id="notices">${notices}</div>
 <div id="transcript">${transcript(view)}</div>`;
+}
+
+function renderSidebar(view: DurableView): string {
+	const active = activeId(view);
+	const items = view.conversations
+		.map(
+			(c) =>
+				`<button class="convo${c.id === active ? " active" : ""}" hx-post="/switch" hx-vals='{"id":${c.id}}' hx-swap="none">` +
+				`<span class="label">${esc(c.label)}</span>${c.title ? `<span class="title">${esc(c.title.slice(0, 60))}</span>` : ""}</button>`,
+		)
+		.join("\n");
+	return `
+<button class="new" hx-post="/new" hx-swap="none">+ new session</button>
+<div id="convos">${items}</div>`;
 }
 
 const PAGE = `
@@ -67,8 +79,19 @@ const PAGE = `
 	<script src="/vendor/ext/sse.js"></script>
 	<style>
 		:root { color-scheme: dark; }
-		body { font-family: ui-monospace, monospace; background: #111; color: #ddd; margin: 0; padding: 1rem; max-width: 60rem; margin-inline: auto; }
-		.status { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.8rem; color: #888; margin-bottom: 0.5rem; align-items: center; }
+		* { box-sizing: border-box; }
+		body { font-family: ui-monospace, monospace; background: #111; color: #ddd; margin: 0; }
+		.layout { display: grid; grid-template-columns: 240px 1fr; gap: 1rem; max-width: 68rem; margin-inline: auto; padding: 1rem; }
+		aside { border-right: 1px solid #222; padding-right: 0.8rem; }
+		aside .brand { font-size: 0.8rem; letter-spacing: 0.08em; text-transform: uppercase; color: #666; margin-bottom: 0.6rem; }
+		aside .new { width: 100%; margin-bottom: 0.6rem; }
+		aside .convo { display: block; width: 100%; text-align: left; background: transparent; color: #999; border: 0; border-radius: 6px; padding: 0.4rem 0.5rem; margin: 0.15rem 0; cursor: pointer; }
+		aside .convo.active { background: #1d2a3a; color: #cde; }
+		aside .convo .label { display: block; font-size: 0.85rem; }
+		aside .convo .title { display: block; font-size: 0.7rem; color: #666; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+		main { min-width: 0; }
+		h1 { font-size: 1rem; margin: 0 0 0.6rem; }
+		.status { display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.75rem; color: #888; margin-bottom: 0.5rem; }
 		.msg { margin: 0.4rem 0; padding: 0.5rem 0.7rem; border-radius: 8px; }
 		.msg.user { background: #1d2a3a; } .msg.assistant { background: #1a1f1a; } .msg.event { background: #1b1b1b; color: #777; font-size: 0.8rem; }
 		.who { display: block; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.08em; color: #666; margin-bottom: 0.25rem; }
@@ -77,24 +100,31 @@ const PAGE = `
 		.notice.error { border-color: #b55; color: #d99; } .notice.warning { border-color: #b95; }
 		form { display: flex; gap: 0.5rem; margin-top: 1rem; position: sticky; bottom: 0; background: #111; padding: 0.5rem 0; }
 		textarea { flex: 1; background: #181818; color: #ddd; border: 1px solid #333; border-radius: 8px; padding: 0.6rem; font: inherit; min-height: 3rem; }
-		button { background: #24344a; color: #cde; border: 0; border-radius: 8px; padding: 0.5rem 0.9rem; cursor: pointer; }
+		button { background: #24344a; color: #cde; border: 0; border-radius: 8px; padding: 0.5rem 0.9rem; cursor: pointer; font-family: inherit; }
 		button.danger { background: #3a2424; color: #ecc; }
-		.convo { font-size: 0.7rem; padding: 0.2rem 0.5rem; }
+		@media (max-width: 720px) { .layout { grid-template-columns: 1fr; padding: 0.6rem; } aside { border-right: 0; border-bottom: 1px solid #222; padding: 0 0 0.6rem; } }
 	</style>
 </head>
 <body>
-	<h1>durable-homelab</h1>
-	<div hx-ext="sse" sse-connect="/events" sse-swap="full" hx-swap="innerHTML" hx-get="/fragment" hx-trigger="every 4s"><!-- first paint --></div>
-	<form hx-post="/submit" hx-target="#form-status" hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) this.reset()">
-		<textarea name="text" placeholder="prompt — joins the running work (steer)"></textarea>
-		<button type="submit">send</button>
-		<button type="submit" name="action" value="compact" class="danger">compact</button>
-		<button type="submit" name="action" value="abort" class="danger">abort</button>
-	</form>
-	<div id="form-status"></div>
-	<script>
-		htmx.on("htmx:load", () => { if (!document.querySelector("#transcript")) htmx.ajax("GET", "/fragment", { target: "[sse-swap='full']" }); });
-	</script>
+	<div class="layout">
+		<aside id="sidebar" hx-ext="sse" sse-connect="/events">
+			<div class="brand">durable-homelab</div>
+			<div sse-swap="sidebar" hx-swap="innerHTML" hx-get="/sidebar" hx-trigger="load, every 8s"></div>
+		</aside>
+		<main>
+			<h1>durable-homelab</h1>
+			<div hx-ext="sse" sse-connect="/events">
+				<div sse-swap="main" hx-swap="innerHTML" hx-get="/fragment" hx-trigger="load, every 4s"></div>
+			</div>
+			<form hx-post="/submit" hx-target="#form-status" hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) this.reset()">
+				<textarea name="text" placeholder="prompt — joins the running work (steer)"></textarea>
+				<button type="submit">send</button>
+				<button type="submit" name="action" value="compact" class="danger">compact</button>
+				<button type="submit" name="action" value="abort" class="danger">abort</button>
+			</form>
+			<div id="form-status"></div>
+		</main>
+	</div>
 </body>
 </html>
 `;
@@ -112,21 +142,28 @@ const formValue = (body: string, name: string): string => {
 	return params.get(name) ?? "";
 };
 
+const SSE = (event: string, html: string): string =>
+	`event: ${event}\ndata: ${html.split("\n").join("\ndata: ")}\n\n`;
+
 /** SSE + htmx web surface: the server renders DurableView fragments; the browser swaps them. */
 export function createWebServer(
 	view: { current(): DurableView; subscribe(listener: () => void): () => void },
 	controller: DurableController,
 	port: number,
-): { close(): Promise<void> } {
+): { wire(viewGetter: () => DurableView): void; server: import("node:http").Server; close(): Promise<void> } {
 	const clients = new Set<ServerResponse>();
 	let renderTimer: NodeJS.Timeout | undefined;
 	const push = (): void => {
 		if (renderTimer !== undefined) return;
 		renderTimer = setTimeout(() => {
 			renderTimer = undefined;
-			const payload = `event: full\ndata: ${renderFull(view.current()).split("\n").join("\ndata: ")}\n\n`;
+			const view = viewNow();
+			const payload = SSE("main", renderMain(view)) + SSE("sidebar", renderSidebar(view));
 			for (const client of clients) client.write(payload);
 		}, 120);
+	};
+	let viewNow: () => DurableView = () => {
+		throw new Error("view not wired");
 	};
 
 	const server = createServer(async (request, response) => {
@@ -147,9 +184,9 @@ export function createWebServer(
 				response.end(readFileSync(join(process.cwd(), "vendor", "ext", "sse.js")));
 				return;
 			}
-			if (url === "/fragment") {
+			if (url === "/fragment" || url === "/sidebar") {
 				response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-				response.end(renderFull(view.current()));
+				response.end(url === "/fragment" ? renderMain(viewNow()) : renderSidebar(viewNow()));
 				return;
 			}
 			if (url === "/events") {
@@ -158,7 +195,10 @@ export function createWebServer(
 					"cache-control": "no-cache",
 					connection: "keep-alive",
 				});
-				response.write(`event: full\ndata: ${renderFull(view.current()).split("\n").join("\ndata: ")}\n\n`);
+				const send = (event: string, html: string): void =>
+					response.write(SSE(event, html));
+				send("main", renderMain(viewNow()));
+				send("sidebar", renderSidebar(viewNow()));
 				clients.add(response);
 				const heartbeat = setInterval(() => response.write(": ping\n\n"), 15000);
 				request.on("close", () => {
@@ -179,9 +219,14 @@ export function createWebServer(
 				return;
 			}
 			if (url === "/switch" && request.method === "POST") {
-				const body = await readBody(request);
-				const id = Number(formValue(body, "id"));
+				const id = Number(formValue(await readBody(request), "id"));
 				if (Number.isFinite(id)) void controller.switchConversation(id);
+				response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+				response.end("");
+				return;
+			}
+			if (url === "/new" && request.method === "POST") {
+				void controller.createConversation();
 				response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
 				response.end("");
 				return;
@@ -194,9 +239,12 @@ export function createWebServer(
 		}
 	});
 
-	view.subscribe(push);
-	server.listen(port);
 	return {
+		wire(viewGetter: () => DurableView): void {
+			viewNow = viewGetter;
+			view.subscribe(push);
+		},
+		server,
 		close: () =>
 			new Promise((resolve) => {
 				for (const client of clients) client.end();

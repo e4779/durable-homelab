@@ -5,6 +5,8 @@ import { createWebServer } from "./web.ts";
 const port = Number(process.env.PORT ?? 8642);
 const durable = await openDurable({ continueSession: true });
 const web = createWebServer(durable.view, durable.controller, port);
+web.wire(() => durable.view.current());
+web.server.listen(port);
 console.log(`durable-homelab web surface on http://0.0.0.0:${port}`);
 
 const shutdown = (): void => {

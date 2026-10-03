@@ -9,6 +9,7 @@ import {
 	type Cursor,
 	type EntryRecord,
 	Harness,
+	configure,
 	type ModelRef,
 	ROOT_CONVERSATION_ID,
 	type Submission,
@@ -64,6 +65,7 @@ export interface DurableController {
 	setModel(model: ModelRef): Promise<void>;
 	toggleTasks(): Promise<void>;
 	switchConversation(id: ConversationId): Promise<void>;
+	createConversation(): Promise<void>;
 }
 
 export interface OpenDurableOptions {
@@ -273,6 +275,27 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 					const thinking: ModelThinkingLevel = agentOf(state.conversation).thinkingLevel ?? "off";
 					await current.configure({ model: ref, thinkingLevel: clampThinkingLevel(model, thinking) }, context);
 				}),
+			createConversation: () =>
+				command(async () => {
+					let createdId: ConversationId | undefined;
+					await opened.commit(async (tx) => {
+						const record = await tx.createConversation({ ownership: { kind: "ownerless" } });
+						createdId = record.id;
+						const model = defaultModelRef(modelRuntime);
+						await configure(tx, record.id, {
+							agent: { cwd: location.cwd, ...(model === undefined ? {} : { model }) },
+						}, context);
+					}, context);
+					if (createdId === undefined) throw new Error("Conversation was not created");
+					const next = await opened.conversation(createdId, context);
+					const nextState = await next.viewState(context);
+					unsubscribe();
+					conversation.dispose();
+					current = next;
+					conversation = nextState;
+					unsubscribe = nextState.subscribe((value) => update({ conversation: value }));
+				}),
+
 			toggleTasks: () =>
 				command(async () => {
 					if (tasks !== undefined) {
