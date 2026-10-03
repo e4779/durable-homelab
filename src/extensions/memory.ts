@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 
 const run = promisify(execFile);
-const KN = process.env.KN_DIR ?? "/home/e4779/kn";
+const KN = process.env.KN_DIR ?? join(homedir(), "kn");
 
 const KnSearch = defineTool({
 	name: "kn_search",
