@@ -84,8 +84,8 @@ const PAGE = `
 </head>
 <body>
 	<h1>durable-homelab</h1>
-	<div hx-ext="sse" sse-connect="/events" sse-swap="full" hx-swap="innerHTML"><!-- first paint --></div>
-	<form hx-post="/submit" hx-target="#form-status" hx-swap="innerHTML">
+	<div hx-ext="sse" sse-connect="/events" sse-swap="full" hx-swap="innerHTML" hx-get="/fragment" hx-trigger="every 4s"><!-- first paint --></div>
+	<form hx-post="/submit" hx-target="#form-status" hx-swap="innerHTML" hx-on::after-request="if(event.detail.successful) this.reset()">
 		<textarea name="text" placeholder="prompt — joins the running work (steer)"></textarea>
 		<button type="submit">send</button>
 		<button type="submit" name="action" value="compact" class="danger">compact</button>
