@@ -147,6 +147,7 @@ export function renderSidebar(view: DurableView): string {
 		`<a class="convo${c.id === active ? " active" : ""}${c.cwd === defaultCwd && c.label === "main" ? " convo-root" : " convo-sub"}" href="/${c.id}" hx-trigger="click" hx-post="/switch" hx-vals='{"id":${c.id}}' hx-swap="none">` +
 		`<span class="label">${esc(c.label)}</span>${c.title ? `<span class="title">${esc(c.title.slice(0, 60))}</span>` : ""}</a>`;
 
+	const collapsed: Set<string> = (globalThis as any).__projCollapsed instanceof Set ? (globalThis as any).__projCollapsed : new Set<string>();
 	const groups: string[] = [];
 	for (const project of projects) {
 		const convos = view.conversations
@@ -154,9 +155,10 @@ export function renderSidebar(view: DurableView): string {
 			.sort((a, b) => recency(b) - recency(a));
 		if (convos.length === 0 && project !== defaultCwd) continue;
 		groups.push(
-			`<div class="project-head">▾ <span title="${escAttr(project)}">${esc(projectName(project))}</span>` +
-			`<button class="proj-new" title="new session in ${escAttr(projectName(project))}" hx-post="/new" hx-vals='${JSON.stringify({ cwd: project }).replace(/'/g, "&#39;")}' hx-swap="none">+</button></div>` +
-			`<div class="proj-group">${convos.map(renderConvo).join("\n") || '<div class="empty">no sessions</div>'}</div>`,
+			`<details class="proj" data-project="${escAttr(project)}"${collapsed.has(project) ? "" : " open"}>` +
+			`<summary class="project-head"><span class="tri">▾</span> <span title="${escAttr(project)}">${esc(projectName(project))}</span>` +
+			`<button class="proj-new" title="new session in ${escAttr(projectName(project))}" onclick="event.stopPropagation()" hx-post="/new" hx-vals='${JSON.stringify({ cwd: project }).replace(/'/g, "&#39;")}' hx-swap="none">+</button></summary>` +
+			`<div class="proj-group">${convos.map(renderConvo).join("\n") || '<div class="empty">no sessions</div>'}</div></details>`,
 		);
 	}
 	return `
@@ -255,7 +257,19 @@ const PAGE = `
 		aside { border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; min-height: 0; min-width: 0; }
 		#sidebar-swap, aside .convo { min-width: 0; max-width: 100%; }
 		aside .convo .label { word-break: break-word; }
+		details.proj > summary.project-head { cursor: pointer; list-style: none; user-select: none; }
+		details.proj > summary.project-head::-webkit-details-marker { display: none; }
+		details.proj[open] > summary .tri { display: inline-block; }
+		details.proj:not([open]) .proj-group { display: none; }
+		details.proj:not([open]) > summary .tri { transform: rotate(-90deg); display: inline-block; }
+		.tri { transition: transform 0.12s; }
 		.project-head { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--faint); padding: 0.5rem 0.6rem 0.2rem; }
+		.project-head span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+		.proj-new { background: transparent; border: 1px solid var(--line); color: var(--faint); font-size: 0.7rem; padding: 0 0.4rem; border-radius: 5px; line-height: 1.3; cursor: pointer; }
+		.proj-new:hover { color: #cfe2f5; border-color: #35507a; }
+		.add-project { display: block; width: calc(100% - 1.6rem); margin: 0 0.8rem 0.4rem; background: transparent; border: 1px dashed var(--line); color: var(--faint); font-size: 0.75rem; padding: 0.35rem; border-radius: 8px; cursor: pointer; }
+		.add-project:hover { color: var(--text); border-color: #35507a; }
+		.empty { font-size: 0.75rem; color: var(--faint); padding: 0.2rem 0.6rem; }
 		a.convo-sub { margin-left: 0.9rem; }
 		a.convo-root { border: 1px solid var(--line); }
 		a.convo-root.active { border-color: #35507a; }
@@ -381,12 +395,15 @@ const PAGE = `
 			}
 			el.innerHTML = html;
 			if (stick) el.scrollTop = el.scrollHeight;
-			if (id === "sidebar-swap") updateUrlFromSidebar(el);
+			if (id === "sidebar-swap") { applyCollapsed(el); updateUrlFromSidebar(el); }
 		};
 		const refresh = () => fetch("/fragment").then((r) => r.text()).then((html) => paint("main-swap", html));
 		const currentConvoId = () => {
 			const m = /^\\/(\\d+)$/.exec(location.pathname);
 			return m ? m[1] : null;
+		};
+		const applyCollapsed = (el) => {
+			for (const d of el.querySelectorAll("details.proj")) d.open = !window.__projCollapsed.has(d.dataset.project);
 		};
 		const updateUrlFromSidebar = (el) => {
 			const act = el.querySelector(".convo.active");
@@ -396,8 +413,17 @@ const PAGE = `
 			if (m && location.pathname !== "/" + m[1]) history.replaceState(null, "", "/" + m[1]);
 		};
 		document.body.addEventListener("htmx:afterSwap", (e) => {
-			if (e.target && e.target.id === "sidebar-swap") updateUrlFromSidebar(e.target);
+			if (e.target && e.target.id === "sidebar-swap") { applyCollapsed(e.target); updateUrlFromSidebar(e.target); }
 		});
+		window.__projCollapsed = new Set(JSON.parse(localStorage.getItem("projCollapsed") || "[]"));
+		document.addEventListener("toggle", (e) => {
+			const d = e.target;
+			if (d.matches && d.matches("details.proj")) {
+				if (d.open) window.__projCollapsed.delete(d.dataset.project);
+				else window.__projCollapsed.add(d.dataset.project);
+				localStorage.setItem("projCollapsed", JSON.stringify([...window.__projCollapsed]));
+			}
+		}, true);
 		document.addEventListener("click", (e) => {
 			const a = e.target.closest("a.convo");
 			if (!a || e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
@@ -664,9 +690,23 @@ export function createWebServer(
 				return;
 			}
 			if (url === "/new" && request.method === "POST") {
-				void controller.createConversation();
+				const cwd = new URLSearchParams(await readBody(request)).get("cwd") ?? undefined;
+				void controller.createConversation(cwd ?? undefined);
 				response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
 				response.end("");
+				return;
+			}
+			if (url === "/projects/add" && request.method === "POST") {
+				const path = String(request.headers["hx-prompt"] ?? "").trim();
+				try {
+					if (path.length === 0) throw new Error("empty path");
+					await controller.addProject(path);
+					response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+					response.end(`<div id="form-status" class="notice info">project added: ${esc(path)}</div>`);
+				} catch (e) {
+					response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+					response.end(`<div id="form-status" class="notice error">add failed: ${esc(e instanceof Error ? e.message : String(e))}</div>`);
+				}
 				return;
 			}
 			response.writeHead(404);

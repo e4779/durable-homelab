@@ -347,6 +347,7 @@ export async function openDurable(options: OpenDurableOptions = {}): Promise<Ope
 					conversation.dispose();
 					current = next;
 					conversation = nextState;
+					update({ conversations: state.conversations.map((c) => (c.id === createdId ? { ...c, cwd: target } : c)) });
 					unsubscribe = nextState.subscribe((value) => update({ conversation: value }));
 				}),
 
